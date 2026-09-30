@@ -6,7 +6,11 @@
 :root{--bg:#f2f4ef;--fg:#16201a;--mut:#5f6b62;--line:#d6dbd2;--acc:#1f6b3a;--card:#fff;--hl:#e4efe6}
 @media(prefers-color-scheme:dark){:root{--bg:#121812;--fg:#e8eee9;--mut:#93a097;--line:#2a352d;--acc:#5fc487;--card:#1a221b;--hl:#22322a}}
 *{box-sizing:border-box}
-body{margin:0 auto;max-width:980px;padding:20px 16px 60px;background:var(--bg);color:var(--fg);font:15px/1.45 ui-sans-serif,system-ui,sans-serif}
+body{margin:0 auto;max-width:1400px;padding:20px 16px 60px;background:var(--bg);color:var(--fg);font:15px/1.45 ui-sans-serif,system-ui,sans-serif}
+h2{font-size:16px;margin:8px 0}
+.cols{display:grid;grid-template-columns:1fr 1fr;gap:20px;align-items:start}
+.cols section{min-width:0}
+@media(max-width:1000px){.cols{grid-template-columns:1fr}}
 h1{font-size:26px;margin:0 0 4px;letter-spacing:-.02em}
 p.sub{margin:0 0 18px;color:var(--mut)}
 form{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px}
@@ -22,7 +26,7 @@ button:focus-visible,input:focus-visible{outline:2px solid var(--acc);outline-of
 .err{color:#b42318;font-weight:600}
 .wrap{overflow-x:auto;border:1px solid var(--line);border-radius:8px;background:var(--card)}
 table{border-collapse:collapse;width:100%;white-space:nowrap}
-th,td{padding:8px 12px;text-align:left;border-bottom:1px solid var(--line)}
+th,td{padding:6px 9px;font-size:13px;text-align:left;border-bottom:1px solid var(--line)}
 th{font-size:13px;color:var(--mut);font-weight:600;position:sticky;top:0;background:var(--card)}
 td.p{font-weight:600}
 tr:last-child td{border-bottom:0}
@@ -46,7 +50,7 @@ tr:nth-child(even) td{background:var(--hl)}
 
 <script>
 const $=id=>document.getElementById(id),API='https://api.sleeper.app/v1';
-let ranks=[],cols=[],players={},idx={},leagues=[],cur=0,pos='ALL',limit=50;
+let ranks=[],cols=[],players={},idx={},rankById={},leagues=[],cur=0,pos='ALL',limit=50;
 
 const j=async u=>{const r=await fetch(API+u);if(!r.ok)throw new Error('Sleeper returned '+r.status);return r.json()};
 const norm=s=>s.toLowerCase().replace(/[^a-z\s]/g,'').replace(/\b(jr|sr|ii|iii|iv|v)\b/g,'').replace(/\s+/g,' ').trim();
@@ -82,7 +86,7 @@ async function loadPlayers(){
   try{const c=JSON.parse(localStorage.getItem('sl_players')||'null');if(c&&Date.now()-c.t<864e5)return c.d}catch(e){}
   const all=await j('/players/nfl'),d={};
   for(const [id,p] of Object.entries(all)){
-    if(!p.team||!p.first_name||!['QB','RB','WR','TE','K'].includes(p.position))continue;
+    if(!(p.team||p.active)||!p.first_name||!['QB','RB','WR','TE','K'].includes(p.position))continue;
     d[id]=[p.first_name+' '+p.last_name,p.position,p.team];
   }
   try{localStorage.setItem('sl_players',JSON.stringify({t:Date.now(),d}))}catch(e){}
@@ -96,6 +100,7 @@ function match(){
     const ids=idx[norm(r.Player||'')]||[];
     r._id=ids.find(i=>players[i][1]==r.Position&&players[i][2]==r.Team)||ids.find(i=>players[i][1]==r.Position)||ids[0]||null;
   }
+  rankById={};ranks.forEach((r,i)=>{r._n=i+1;if(r._id)rankById[r._id]=r});
 }
 
 $('f').onsubmit=async e=>{
@@ -112,8 +117,10 @@ $('f').onsubmit=async e=>{
     if(!ls.length)throw new Error('No leagues found for '+u+' in '+s+'.');
     leagues=await Promise.all(ls.map(async l=>{
       const rs=await j('/league/'+l.league_id+'/rosters'),taken=new Set();
-      for(const r of rs)for(const id of [...(r.players||[]),...(r.reserve||[]),...(r.taxi||[])])taken.add(id);
-      return{name:l.name,taken};
+      const ids=r=>[...(r.players||[]),...(r.reserve||[]),...(r.taxi||[])];
+      for(const r of rs)ids(r).forEach(id=>taken.add(id));
+      const me=rs.find(r=>r.owner_id==user.user_id||(r.co_owners||[]).includes(user.user_id));
+      return{name:l.name,taken,mine:me?[...new Set(ids(me))]:[],slots:l.roster_positions||[]};
     }));
     match();cur=0;pos='ALL';limit=50;$('msg').textContent='';render();
   }catch(err){$('msg').className='note err';$('msg').textContent=err.message}
@@ -126,17 +133,21 @@ function render(){
   $('pos').innerHTML='';
   ['ALL',...new Set(ranks.map(r=>r.Position).filter(Boolean))].forEach(p=>{const b=document.createElement('button');b.textContent=p;b.className=p==pos?'on':'';
     b.onclick=()=>{pos=p;limit=50;render()};$('pos').appendChild(b)});
-  const L=leagues[cur];
-  const all=ranks.filter(r=>r._id&&!L.taken.has(r._id)&&(pos=='ALL'||r.Position==pos));
-  const rows=all.slice(0,limit);
-  const esc=s=>s.replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
-  $('out').innerHTML='<div class="wrap"><table><thead><tr>'+cols.map(c=>'<th>'+esc(c)+'</th>').join('')+'</tr></thead><tbody>'+
-    rows.map(r=>'<tr>'+cols.map(c=>'<td'+(c=='Player'?' class="p"':'')+'>'+esc(r[c]||'')+'</td>').join('')+'</tr>').join('')+
-    '</tbody></table></div>'+(all.length>limit?'<button class="more" id="more">Show 50 more ('+(all.length-limit)+' left)</button>':'')+
-    (all.length?'':'<p class="note">No available ranked players for this filter.</p>');
+  const L=leagues[cur],ok=r=>pos=='ALL'||r.Position==pos;
+  const esc=s=>String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+  const tbl=rs=>'<div class="wrap"><table><thead><tr>'+cols.map(c=>'<th>'+esc(c)+'</th>').join('')+'</tr></thead><tbody>'+
+    rs.map(r=>'<tr>'+cols.map(c=>'<td'+(c=='Player'?' class="p"':'')+'>'+esc(r[c]||'')+'</td>').join('')+'</tr>').join('')+'</tbody></table></div>';
+  const mine=L.mine.map(id=>{const r=rankById[id],p=players[id];
+    return r||(p?{Player:p[0],Position:p[1],Team:p[2],_n:1e9}:{Player:id,Position:'DEF',Team:id,_n:1e9})}).filter(ok).sort((a,b)=>a._n-b._n);
+  const all=ranks.filter(r=>r._id&&!L.taken.has(r._id)&&ok(r)),rows=all.slice(0,limit);
+  $('out').innerHTML='<div class="cols"><section><h2>Your roster ('+mine.length+')</h2>'+
+    (L.mine.length?tbl(mine):'<p class="note">Could not find this user\'s roster in this league.</p>')+'</section>'+
+    '<section><h2>Available players</h2>'+tbl(rows)+
+    (all.length>limit?'<button class="more" id="more">Show 50 more ('+(all.length-limit)+' left)</button>':'')+
+    (all.length?'':'<p class="note">No available ranked players for this filter.</p>')+'</section></div>';
   if($('more'))$('more').onclick=()=>{limit+=50;render()};
   const miss=ranks.filter(r=>!r._id).map(r=>r.Player);
-  $('miss').textContent=miss.length?miss.length+' ranked players not matched to Sleeper: '+miss.slice(0,8).join(', ')+(miss.length>8?'…':''):'';
+  $('miss').textContent=miss.length?miss.length+' ranked players not matched to Sleeper: '+miss.slice(0,8).join(', ')+(miss.length>8?'\u2026':''):'';
 }
 
 $('user').value=localStorage.getItem('sl_user')||'';
