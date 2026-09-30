@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Waiver Wire Ranker</title>
+<style>
+:root{--bg:#f2f4ef;--fg:#16201a;--mut:#5f6b62;--line:#d6dbd2;--acc:#1f6b3a;--card:#fff;--hl:#e4efe6}
+@media(prefers-color-scheme:dark){:root{--bg:#121812;--fg:#e8eee9;--mut:#93a097;--line:#2a352d;--acc:#5fc487;--card:#1a221b;--hl:#22322a}}
+*{box-sizing:border-box}
+body{margin:0 auto;max-width:980px;padding:20px 16px 60px;background:var(--bg);color:var(--fg);font:15px/1.45 ui-sans-serif,system-ui,sans-serif}
+h1{font-size:26px;margin:0 0 4px;letter-spacing:-.02em}
+p.sub{margin:0 0 18px;color:var(--mut)}
+form{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px}
+input,button,select{font:inherit;color:inherit;border:1px solid var(--line);background:var(--card);border-radius:6px;padding:9px 12px}
+input#user{flex:1;min-width:180px}input#season{width:84px}
+button{cursor:pointer}button.go{background:var(--acc);border-color:var(--acc);color:#fff;font-weight:600}
+button:focus-visible,input:focus-visible{outline:2px solid var(--acc);outline-offset:2px}
+.bar{display:flex;gap:6px;flex-wrap:wrap;margin:12px 0}
+.bar button{padding:6px 12px;border-radius:99px}
+.bar button.on{background:var(--fg);color:var(--bg);border-color:var(--fg)}
+#leagues button.on{background:var(--acc);border-color:var(--acc);color:#fff}
+.note{color:var(--mut);font-size:13px;margin:8px 0}
+.err{color:#b42318;font-weight:600}
+.wrap{overflow-x:auto;border:1px solid var(--line);border-radius:8px;background:var(--card)}
+table{border-collapse:collapse;width:100%;white-space:nowrap}
+th,td{padding:8px 12px;text-align:left;border-bottom:1px solid var(--line)}
+th{font-size:13px;color:var(--mut);font-weight:600;position:sticky;top:0;background:var(--card)}
+td.p{font-weight:600}
+tr:last-child td{border-bottom:0}
+tr:nth-child(even) td{background:var(--hl)}
+.more{margin:12px 0}
+</style></head>
+<body>
+<h1>Waiver Wire Ranker</h1>
+<p class="sub">Enter a Sleeper username to see the best available players in each of your leagues, ranked best to worst.</p>
+<form id="f">
+  <input id="user" placeholder="Sleeper username" autocomplete="off" required>
+  <input id="season" value="2026" aria-label="Season" inputmode="numeric">
+  <button class="go">Find players</button>
+</form>
+<div class="note" id="rk"></div>
+<div id="msg" class="note"></div>
+<div class="bar" id="leagues"></div>
+<div class="bar" id="pos"></div>
+<div id="out"></div>
+<div class="note" id="miss"></div>
+
+<script>
+const $=id=>document.getElementById(id),API='https://api.sleeper.app/v1';
+let ranks=[],cols=[],players={},idx={},leagues=[],cur=0,pos='ALL',limit=50;
+
+const j=async u=>{const r=await fetch(API+u);if(!r.ok)throw new Error('Sleeper returned '+r.status);return r.json()};
+const norm=s=>s.toLowerCase().replace(/[^a-z\s]/g,'').replace(/\b(jr|sr|ii|iii|iv|v)\b/g,'').replace(/\s+/g,' ').trim();
+
+function parseCSV(t){
+  t=t.replace(/^\uFEFF/,'');const rows=[];let r=[],c='',q=false;
+  for(let i=0;i<t.length;i++){const ch=t[i];
+    if(q){if(ch=='"'){if(t[i+1]=='"'){c+='"';i++}else q=false}else c+=ch}
+    else if(ch=='"')q=true;
+    else if(ch==','){r.push(c);c=''}
+    else if(ch=='\n'||ch=='\r'){if(ch=='\r'&&t[i+1]=='\n')i++;r.push(c);c='';if(r.length>1||r[0])rows.push(r);r=[]}
+    else c+=ch}
+  if(c||r.length){r.push(c);rows.push(r)}
+  const h=rows.shift().map(x=>x.trim());cols=h;
+  return rows.map(x=>Object.fromEntries(h.map((k,i)=>[k,(x[i]||'').trim()])));
+}
+
+function setRanks(text,label){
+  ranks=parseCSV(text);
+  $('rk').textContent=ranks.length+' ranked players loaded ('+label+'). ';
+  const b=document.createElement('label');b.innerHTML='<u style="cursor:pointer">Use your own CSV</u><input type="file" accept=".csv" hidden>';
+  b.querySelector('input').onchange=async e=>{const f=e.target.files[0];if(f){setRanks(await f.text(),f.name);if(leagues.length)match(),render()}};
+  $('rk').appendChild(b);
+}
+
+async function loadRanks(){
+  try{const r=await fetch('rankings.csv');if(!r.ok)throw 0;setRanks(await r.text(),'rankings.csv')}
+  catch(e){$('rk').innerHTML='Could not load rankings.csv. <label><u style="cursor:pointer">Choose a rankings CSV</u><input type="file" accept=".csv" hidden id="up"></label>';
+    $('up').onchange=async e=>{const f=e.target.files[0];if(f)setRanks(await f.text(),f.name)}}
+}
+
+async function loadPlayers(){
+  try{const c=JSON.parse(localStorage.getItem('sl_players')||'null');if(c&&Date.now()-c.t<864e5)return c.d}catch(e){}
+  const all=await j('/players/nfl'),d={};
+  for(const [id,p] of Object.entries(all)){
+    if(!p.team||!p.first_name||!['QB','RB','WR','TE','K'].includes(p.position))continue;
+    d[id]=[p.first_name+' '+p.last_name,p.position,p.team];
+  }
+  try{localStorage.setItem('sl_players',JSON.stringify({t:Date.now(),d}))}catch(e){}
+  return d;
+}
+
+function match(){
+  idx={};
+  for(const id in players)(idx[norm(players[id][0])]??=[]).push(id);
+  for(const r of ranks){
+    const ids=idx[norm(r.Player||'')]||[];
+    r._id=ids.find(i=>players[i][1]==r.Position&&players[i][2]==r.Team)||ids.find(i=>players[i][1]==r.Position)||ids[0]||null;
+  }
+}
+
+$('f').onsubmit=async e=>{
+  e.preventDefault();
+  const u=$('user').value.trim(),s=$('season').value.trim();
+  $('msg').className='note';$('msg').textContent='Loading leagues…';
+  $('out').innerHTML='';$('leagues').innerHTML='';$('pos').innerHTML='';$('miss').textContent='';
+  try{
+    if(!ranks.length)throw new Error('Load a rankings CSV first.');
+    const [user,pl]=await Promise.all([j('/user/'+encodeURIComponent(u)),loadPlayers()]);
+    if(!user)throw new Error('No Sleeper user named "'+u+'".');
+    players=pl;localStorage.setItem('sl_user',u);
+    const ls=await j('/user/'+user.user_id+'/leagues/nfl/'+s);
+    if(!ls.length)throw new Error('No leagues found for '+u+' in '+s+'.');
+    leagues=await Promise.all(ls.map(async l=>{
+      const rs=await j('/league/'+l.league_id+'/rosters'),taken=new Set();
+      for(const r of rs)for(const id of [...(r.players||[]),...(r.reserve||[]),...(r.taxi||[])])taken.add(id);
+      return{name:l.name,taken};
+    }));
+    match();cur=0;pos='ALL';limit=50;$('msg').textContent='';render();
+  }catch(err){$('msg').className='note err';$('msg').textContent=err.message}
+};
+
+function render(){
+  $('leagues').innerHTML='';
+  leagues.forEach((l,i)=>{const b=document.createElement('button');b.textContent=l.name;b.className=i==cur?'on':'';
+    b.onclick=()=>{cur=i;limit=50;render()};$('leagues').appendChild(b)});
+  $('pos').innerHTML='';
+  ['ALL',...new Set(ranks.map(r=>r.Position).filter(Boolean))].forEach(p=>{const b=document.createElement('button');b.textContent=p;b.className=p==pos?'on':'';
+    b.onclick=()=>{pos=p;limit=50;render()};$('pos').appendChild(b)});
+  const L=leagues[cur];
+  const all=ranks.filter(r=>r._id&&!L.taken.has(r._id)&&(pos=='ALL'||r.Position==pos));
+  const rows=all.slice(0,limit);
+  const esc=s=>s.replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+  $('out').innerHTML='<div class="wrap"><table><thead><tr>'+cols.map(c=>'<th>'+esc(c)+'</th>').join('')+'</tr></thead><tbody>'+
+    rows.map(r=>'<tr>'+cols.map(c=>'<td'+(c=='Player'?' class="p"':'')+'>'+esc(r[c]||'')+'</td>').join('')+'</tr>').join('')+
+    '</tbody></table></div>'+(all.length>limit?'<button class="more" id="more">Show 50 more ('+(all.length-limit)+' left)</button>':'')+
+    (all.length?'':'<p class="note">No available ranked players for this filter.</p>');
+  if($('more'))$('more').onclick=()=>{limit+=50;render()};
+  const miss=ranks.filter(r=>!r._id).map(r=>r.Player);
+  $('miss').textContent=miss.length?miss.length+' ranked players not matched to Sleeper: '+miss.slice(0,8).join(', ')+(miss.length>8?'…':''):'';
+}
+
+$('user').value=localStorage.getItem('sl_user')||'';
+loadRanks();
+</script>
+</body></html>
