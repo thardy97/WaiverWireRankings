@@ -3,8 +3,8 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Waiver Wire Ranker</title>
 <style>
-:root{--bg:#f2f4ef;--fg:#16201a;--mut:#5f6b62;--line:#d6dbd2;--acc:#1f6b3a;--card:#fff;--hl:#e4efe6}
-@media(prefers-color-scheme:dark){:root{--bg:#121812;--fg:#e8eee9;--mut:#93a097;--line:#2a352d;--acc:#5fc487;--card:#1a221b;--hl:#22322a}}
+:root{--bg:#f1f4f9;--fg:#14202e;--mut:#5b6879;--line:#d5dce6;--acc:#1d5fd1;--card:#fff;--hl:#e6eefb}
+@media(prefers-color-scheme:dark){:root{--bg:#101620;--fg:#e8eef7;--mut:#93a1b5;--line:#263143;--acc:#3b7de8;--card:#18202c;--hl:#1f2c40}}
 *{box-sizing:border-box}
 body{margin:0 auto;max-width:1400px;padding:20px 16px 60px;background:var(--bg);color:var(--fg);font:15px/1.45 ui-sans-serif,system-ui,sans-serif}
 h2{font-size:16px;margin:8px 0}
@@ -32,6 +32,7 @@ td.p{font-weight:600}
 tr:last-child td{border-bottom:0}
 tr:nth-child(even) td{background:var(--hl)}
 .more{margin:12px 0}
+#stamp button{padding:4px 10px;margin-left:6px}
 </style></head>
 <body>
 <h1>Waiver Wire Ranker</h1>
@@ -42,6 +43,7 @@ tr:nth-child(even) td{background:var(--hl)}
   <button class="go">Find players</button>
 </form>
 <div class="note" id="rk"></div>
+<div class="note" id="stamp"></div>
 <div id="msg" class="note"></div>
 <div class="bar" id="leagues"></div>
 <div class="bar" id="pos"></div>
@@ -79,7 +81,7 @@ function setRanks(text,label){
 async function loadRanks(){
   try{const r=await fetch('rankings.csv');if(!r.ok)throw 0;setRanks(await r.text(),'rankings.csv')}
   catch(e){$('rk').innerHTML='Could not load rankings.csv. <label><u style="cursor:pointer">Choose a rankings CSV</u><input type="file" accept=".csv" hidden id="up"></label>';
-    $('up').onchange=async e=>{const f=e.target.files[0];if(f)setRanks(await f.text(),f.name)}}
+    $('up').onchange=async e=>{const f=e.target.files[0];if(f){setRanks(await f.text(),f.name);restore()}}}
 }
 
 async function loadPlayers(){
@@ -103,28 +105,51 @@ function match(){
   rankById={};ranks.forEach((r,i)=>{r._n=i+1;if(r._id)rankById[r._id]=r});
 }
 
-$('f').onsubmit=async e=>{
-  e.preventDefault();
-  const u=$('user').value.trim(),s=$('season').value.trim();
-  $('msg').className='note';$('msg').textContent='Loading leagues…';
-  $('out').innerHTML='';$('leagues').innerHTML='';$('pos').innerHTML='';$('miss').textContent='';
+async function load(u,s){
+  $('msg').className='note';$('msg').textContent='Loading leagues\u2026';
+  $('out').innerHTML='';$('leagues').innerHTML='';$('pos').innerHTML='';$('miss').textContent='';$('stamp').innerHTML='';
   try{
     if(!ranks.length)throw new Error('Load a rankings CSV first.');
     const [user,pl]=await Promise.all([j('/user/'+encodeURIComponent(u)),loadPlayers()]);
     if(!user)throw new Error('No Sleeper user named "'+u+'".');
-    players=pl;localStorage.setItem('sl_user',u);
+    players=pl;
     const ls=await j('/user/'+user.user_id+'/leagues/nfl/'+s);
     if(!ls.length)throw new Error('No leagues found for '+u+' in '+s+'.');
-    leagues=await Promise.all(ls.map(async l=>{
+    const data=await Promise.all(ls.map(async l=>{
       const rs=await j('/league/'+l.league_id+'/rosters'),taken=new Set();
       const ids=r=>[...(r.players||[]),...(r.reserve||[]),...(r.taxi||[])];
       for(const r of rs)ids(r).forEach(id=>taken.add(id));
       const me=rs.find(r=>r.owner_id==user.user_id||(r.co_owners||[]).includes(user.user_id));
-      return{name:l.name,taken,mine:me?[...new Set(ids(me))]:[],slots:l.roster_positions||[]};
+      return{name:l.name,taken:[...taken],mine:me?[...new Set(ids(me))]:[],slots:l.roster_positions||[]};
     }));
-    match();cur=0;pos='ALL';limit=50;$('msg').textContent='';render();
+    const t=Date.now();
+    try{localStorage.setItem('sl_data',JSON.stringify({u,s,t,data}))}catch(e){}
+    show(data,t,u,s);
   }catch(err){$('msg').className='note err';$('msg').textContent=err.message}
-};
+}
+
+function show(data,t,u,s){
+  leagues=data.map(l=>({...l,taken:new Set(l.taken)}));
+  match();cur=0;pos='ALL';limit=50;$('msg').textContent='';
+  $('stamp').innerHTML='';
+  const sp=document.createElement('span'),b=document.createElement('button');
+  sp.textContent=u+' \u00b7 '+s+' \u00b7 leagues updated '+new Date(t).toLocaleString([],{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'});
+  b.textContent='Refresh leagues';b.onclick=()=>load(u,s);
+  $('stamp').append(sp,b);
+  render();
+}
+
+async function restore(){
+  try{
+    const c=JSON.parse(localStorage.getItem('sl_data')||'null');
+    if(!c||!c.data||!ranks.length)return;
+    $('user').value=c.u;$('season').value=c.s;
+    players=await loadPlayers();
+    show(c.data,c.t,c.u,c.s);
+  }catch(e){}
+}
+
+$('f').onsubmit=e=>{e.preventDefault();load($('user').value.trim(),$('season').value.trim())};
 
 function render(){
   $('leagues').innerHTML='';
@@ -150,7 +175,6 @@ function render(){
   $('miss').textContent=miss.length?miss.length+' ranked players not matched to Sleeper: '+miss.slice(0,8).join(', ')+(miss.length>8?'\u2026':''):'';
 }
 
-$('user').value=localStorage.getItem('sl_user')||'';
-loadRanks();
+loadRanks().then(restore);
 </script>
 </body></html>
