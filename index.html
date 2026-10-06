@@ -43,6 +43,7 @@ tr:nth-child(even) td{background:var(--hl)}
   <button class="go">Find players</button>
 </form>
 <div class="note" id="rk"></div>
+<div class="note err" id="warn"></div>
 <div class="note" id="stamp"></div>
 <div id="msg" class="note"></div>
 <div class="bar" id="leagues"></div>
@@ -53,6 +54,11 @@ tr:nth-child(even) td{background:var(--hl)}
 <script>
 const $=id=>document.getElementById(id),API='https://api.sleeper.app/v1';
 let ranks=[],cols=[],players={},idx={},rankById={},leagues=[],cur=0,pos='ALL',limit=50;
+
+const save=(k,v)=>{try{localStorage.setItem(k,JSON.stringify(v));return true}catch(e){return false}};
+const read=k=>{try{return JSON.parse(localStorage.getItem(k)||'null')}catch(e){return null}};
+function storageOK(){try{localStorage.setItem('sl_test','1');const ok=localStorage.getItem('sl_test')=='1';localStorage.removeItem('sl_test');return ok}catch(e){return false}}
+const noSave=()=>{$('warn').textContent="This browser can't save data here (private window, blocked site data, or an embedded preview), so your username, leagues and rankings won't be remembered. Open the page in a normal browser tab to use saving."};
 
 const j=async u=>{const r=await fetch(API+u);if(!r.ok)throw new Error('Sleeper returned '+r.status);return r.json()};
 const norm=s=>s.toLowerCase().replace(/[^a-z\s]/g,'').replace(/\b(jr|sr|ii|iii|iv|v)\b/g,'').replace(/\s+/g,' ').trim();
@@ -70,28 +76,55 @@ function parseCSV(t){
   return rows.map(x=>Object.fromEntries(h.map((k,i)=>[k,(x[i]||'').trim()])));
 }
 
-function setRanks(text,label){
-  ranks=parseCSV(text);
-  $('rk').textContent=ranks.length+' ranked players loaded ('+label+'). ';
-  const b=document.createElement('label');b.innerHTML='<u style="cursor:pointer">Use your own CSV</u><input type="file" accept=".csv" hidden>';
-  b.querySelector('input').onchange=async e=>{const f=e.target.files[0];if(f){setRanks(await f.text(),f.name);if(leagues.length)match(),render()}};
-  $('rk').appendChild(b);
+function setRanks(text,label,custom,keep){
+  const pr=ranks,pc=cols;
+  try{
+    ranks=parseCSV(text);
+    if(!cols.includes('Player')||!cols.includes('Position'))throw new Error('That CSV needs "Player" and "Position" columns. Headers found: '+cols.join(', '));
+  }catch(e){ranks=pr;cols=pc;throw e}
+  if(!keep&&!save('sl_csv',{text,label,custom}))noSave();
+  const rk=$('rk');rk.textContent=ranks.length+' ranked players loaded ('+label+'). ';
+  rk.appendChild(picker(custom?'Use a different CSV':'Use your own CSV'));
+  if(custom){const b=document.createElement('u');b.textContent='Use default rankings';b.style.cssText='cursor:pointer;margin-left:10px';b.onclick=useDefault;rk.appendChild(b)}
+}
+
+function picker(text){
+  const l=document.createElement('label');
+  l.innerHTML='<u style="cursor:pointer">'+text+'</u><input type="file" accept=".csv" hidden>';
+  l.querySelector('input').onchange=e=>pick(e.target.files[0]);
+  return l;
+}
+
+async function pick(f){
+  if(!f)return;
+  try{setRanks(await f.text(),f.name,true)}
+  catch(e){$('msg').className='note err';$('msg').textContent=e.message;return}
+  if(leagues.length){match();render()}else restore();
+}
+
+async function useDefault(){
+  try{localStorage.removeItem('sl_csv')}catch(e){}
+  await loadRanks();
+  if(leagues.length){match();render()}
 }
 
 async function loadRanks(){
-  try{const r=await fetch('rankings.csv');if(!r.ok)throw 0;setRanks(await r.text(),'rankings.csv')}
-  catch(e){$('rk').innerHTML='Could not load rankings.csv. <label><u style="cursor:pointer">Choose a rankings CSV</u><input type="file" accept=".csv" hidden id="up"></label>';
-    $('up').onchange=async e=>{const f=e.target.files[0];if(f){setRanks(await f.text(),f.name);restore()}}}
+  const sv=read('sl_csv');
+  if(sv&&sv.custom){try{setRanks(sv.text,sv.label,true,true);return}catch(e){}}
+  try{const r=await fetch('rankings.csv');if(!r.ok)throw 0;setRanks(await r.text(),'rankings.csv',false);return}catch(e){}
+  if(sv){try{setRanks(sv.text,sv.label+' (saved copy)',false,true);return}catch(e){}}
+  $('rk').textContent='Could not load rankings.csv. ';
+  $('rk').appendChild(picker('Choose a rankings CSV'));
 }
 
 async function loadPlayers(){
-  try{const c=JSON.parse(localStorage.getItem('sl_players')||'null');if(c&&Date.now()-c.t<864e5)return c.d}catch(e){}
+  const c=read('sl_players');if(c&&c.d&&Date.now()-c.t<864e5)return c.d;
   const all=await j('/players/nfl'),d={};
   for(const [id,p] of Object.entries(all)){
     if(!(p.team||p.active)||!p.first_name||!['QB','RB','WR','TE','K'].includes(p.position))continue;
     d[id]=[p.first_name+' '+p.last_name,p.position,p.team];
   }
-  try{localStorage.setItem('sl_players',JSON.stringify({t:Date.now(),d}))}catch(e){}
+  save('sl_players',{t:Date.now(),d});
   return d;
 }
 
@@ -123,7 +156,7 @@ async function load(u,s){
       return{name:l.name,taken:[...taken],mine:me?[...new Set(ids(me))]:[],slots:l.roster_positions||[]};
     }));
     const t=Date.now();
-    try{localStorage.setItem('sl_data',JSON.stringify({u,s,t,data}))}catch(e){}
+    if(!save('sl_data',{u,s,t,data}))noSave();
     show(data,t,u,s);
   }catch(err){$('msg').className='note err';$('msg').textContent=err.message}
 }
@@ -140,13 +173,12 @@ function show(data,t,u,s){
 }
 
 async function restore(){
-  try{
-    const c=JSON.parse(localStorage.getItem('sl_data')||'null');
-    if(!c||!c.data||!ranks.length)return;
-    $('user').value=c.u;$('season').value=c.s;
-    players=await loadPlayers();
-    show(c.data,c.t,c.u,c.s);
-  }catch(e){}
+  const c=read('sl_data');
+  if(!c||!c.data)return;
+  $('user').value=c.u;$('season').value=c.s;
+  if(!ranks.length){$('msg').className='note';$('msg').textContent='Saved leagues found for '+c.u+'. Choose a rankings CSV above to view them.';return}
+  try{players=await loadPlayers();show(c.data,c.t,c.u,c.s)}
+  catch(err){$('msg').className='note err';$('msg').textContent='Could not load saved leagues: '+err.message}
 }
 
 $('f').onsubmit=e=>{e.preventDefault();load($('user').value.trim(),$('season').value.trim())};
@@ -175,6 +207,7 @@ function render(){
   $('miss').textContent=miss.length?miss.length+' ranked players not matched to Sleeper: '+miss.slice(0,8).join(', ')+(miss.length>8?'\u2026':''):'';
 }
 
+if(!storageOK())noSave();
 loadRanks().then(restore);
 </script>
 </body></html>
