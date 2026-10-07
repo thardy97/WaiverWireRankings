@@ -33,6 +33,23 @@ tr:last-child td{border-bottom:0}
 tr:nth-child(even) td{background:var(--hl)}
 .more{margin:12px 0}
 #stamp button{padding:4px 10px;margin-left:6px}
+.tabs{display:flex;gap:4px;border-bottom:1px solid var(--line);margin:14px 0 0}
+.tabs button{border:0;border-bottom:3px solid transparent;border-radius:0;background:none;padding:8px 14px;font-weight:600;color:var(--mut)}
+.tabs button.on{color:var(--acc);border-bottom-color:var(--acc)}
+.best{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0}
+.best div{border:1px solid var(--line);background:var(--card);border-radius:8px;padding:6px 12px;font-size:13px}
+.best span{display:block;color:var(--mut);font-size:11px}
+.pw tr:nth-child(even) td{background:transparent}
+.pw tr.me td{background:var(--hl)}
+.pw td.c{text-align:center}.pw th.c{text-align:center}
+.pw td.r1{color:var(--acc);font-weight:700}
+.pw td.r1 b{font-size:14px}
+.sc{color:var(--mut);font-size:11px;margin-left:5px;font-weight:400}
+.srt,.tm{border:0;background:none;padding:0;font:inherit;color:inherit;cursor:pointer;text-align:left}
+.srt{font-weight:600}.srt.on{color:var(--acc)}
+.tm{font-weight:600}
+.pw tr.det td{white-space:normal;background:var(--card)!important;font-size:13px}
+.pw tr.det div{margin:3px 0}
 </style></head>
 <body>
 <h1>Waiver Wire Ranker</h1>
@@ -46,6 +63,7 @@ tr:nth-child(even) td{background:var(--hl)}
 <div class="note err" id="warn"></div>
 <div class="note" id="stamp"></div>
 <div id="msg" class="note"></div>
+<div class="tabs" id="tabs"></div>
 <div class="bar" id="leagues"></div>
 <div class="bar" id="pos"></div>
 <div id="out"></div>
@@ -76,16 +94,20 @@ function parseCSV(t){
   return rows.map(x=>Object.fromEntries(h.map((k,i)=>[k,(x[i]||'').trim()])));
 }
 
-function setRanks(text,label,custom,keep){
+function setRanks(text,label,keep){
   const pr=ranks,pc=cols;
   try{
     ranks=parseCSV(text);
     if(!cols.includes('Player')||!cols.includes('Position'))throw new Error('That CSV needs "Player" and "Position" columns. Headers found: '+cols.join(', '));
   }catch(e){ranks=pr;cols=pc;throw e}
-  if(!keep&&!save('sl_csv',{text,label,custom}))noSave();
-  const rk=$('rk');rk.textContent=ranks.length+' ranked players loaded ('+label+'). ';
-  rk.appendChild(picker(custom?'Use a different CSV':'Use your own CSV'));
-  if(custom){const b=document.createElement('u');b.textContent='Use default rankings';b.style.cssText='cursor:pointer;margin-left:10px';b.onclick=useDefault;rk.appendChild(b)}
+  if(!keep&&!save('sl_csv',{text,label}))noSave();
+  rkLine(label);
+}
+
+function rkLine(label){
+  const rk=$('rk');
+  rk.textContent=label?ranks.length+' ranked players loaded ('+label+'). ':'Upload your rankings CSV to get started. ';
+  rk.appendChild(picker(label?'Upload a different CSV':'Upload rankings CSV'));
 }
 
 function picker(text){
@@ -97,24 +119,16 @@ function picker(text){
 
 async function pick(f){
   if(!f)return;
-  try{setRanks(await f.text(),f.name,true)}
+  try{setRanks(await f.text(),f.name)}
   catch(e){$('msg').className='note err';$('msg').textContent=e.message;return}
+  $('msg').textContent='';
   if(leagues.length){match();render()}else restore();
 }
 
-async function useDefault(){
-  try{localStorage.removeItem('sl_csv')}catch(e){}
-  await loadRanks();
-  if(leagues.length){match();render()}
-}
-
-async function loadRanks(){
+function loadRanks(){
   const sv=read('sl_csv');
-  if(sv&&sv.custom){try{setRanks(sv.text,sv.label,true,true);return}catch(e){}}
-  try{const r=await fetch('rankings.csv');if(!r.ok)throw 0;setRanks(await r.text(),'rankings.csv',false);return}catch(e){}
-  if(sv){try{setRanks(sv.text,sv.label+' (saved copy)',false,true);return}catch(e){}}
-  $('rk').textContent='Could not load rankings.csv. ';
-  $('rk').appendChild(picker('Choose a rankings CSV'));
+  if(sv&&sv.text){try{setRanks(sv.text,sv.label,true);return}catch(e){}}
+  rkLine('');
 }
 
 async function loadPlayers(){
@@ -138,35 +152,40 @@ function match(){
   rankById={};ranks.forEach((r,i)=>{r._n=i+1;if(r._id)rankById[r._id]=r});
 }
 
+const esc=s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+let tab='waivers',sortKey='Total',openTeam=null;
+
 async function load(u,s){
-  $('msg').className='note';$('msg').textContent='Loading leagues\u2026';
-  $('out').innerHTML='';$('leagues').innerHTML='';$('pos').innerHTML='';$('miss').textContent='';$('stamp').innerHTML='';
+  $('msg').className='note';$('msg').textContent='Loading leagues…';
+  ['out','leagues','pos','tabs','stamp'].forEach(i=>$(i).innerHTML='');$('miss').textContent='';
   try{
-    if(!ranks.length)throw new Error('Load a rankings CSV first.');
+    if(!ranks.length)throw new Error('Upload your rankings CSV first.');
     const [user,pl]=await Promise.all([j('/user/'+encodeURIComponent(u)),loadPlayers()]);
     if(!user)throw new Error('No Sleeper user named "'+u+'".');
     players=pl;
     const ls=await j('/user/'+user.user_id+'/leagues/nfl/'+s);
     if(!ls.length)throw new Error('No leagues found for '+u+' in '+s+'.');
     const data=await Promise.all(ls.map(async l=>{
-      const rs=await j('/league/'+l.league_id+'/rosters'),taken=new Set();
-      const ids=r=>[...(r.players||[]),...(r.reserve||[]),...(r.taxi||[])];
-      for(const r of rs)ids(r).forEach(id=>taken.add(id));
-      const me=rs.find(r=>r.owner_id==user.user_id||(r.co_owners||[]).includes(user.user_id));
-      return{name:l.name,taken:[...taken],mine:me?[...new Set(ids(me))]:[],slots:l.roster_positions||[]};
+      const [rs,us]=await Promise.all([j('/league/'+l.league_id+'/rosters'),j('/league/'+l.league_id+'/users').catch(()=>[])]);
+      const nm={};for(const x of us||[])nm[x.user_id]={team:x.metadata&&x.metadata.team_name,owner:x.display_name};
+      const teams=rs.map(r=>{const o=nm[r.owner_id]||{};
+        return{id:r.roster_id,name:o.team||o.owner||'Team '+r.roster_id,owner:o.owner||'',
+          me:r.owner_id==user.user_id||(r.co_owners||[]).includes(user.user_id),
+          players:[...new Set([...(r.players||[]),...(r.reserve||[]),...(r.taxi||[])])]}});
+      return{name:l.name,slots:l.roster_positions||[],teams};
     }));
     const t=Date.now();
-    if(!save('sl_data',{u,s,t,data}))noSave();
+    if(!save('sl_data',{v:2,u,s,t,data}))noSave();
     show(data,t,u,s);
   }catch(err){$('msg').className='note err';$('msg').textContent=err.message}
 }
 
 function show(data,t,u,s){
-  leagues=data.map(l=>({...l,taken:new Set(l.taken)}));
-  match();cur=0;pos='ALL';limit=50;$('msg').textContent='';
+  leagues=data.map(l=>({...l,taken:new Set(l.teams.flatMap(x=>x.players)),mine:(l.teams.find(x=>x.me)||{players:[]}).players}));
+  match();cur=0;pos='ALL';limit=50;openTeam=null;$('msg').textContent='';
   $('stamp').innerHTML='';
   const sp=document.createElement('span'),b=document.createElement('button');
-  sp.textContent=u+' \u00b7 '+s+' \u00b7 leagues updated '+new Date(t).toLocaleString([],{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'});
+  sp.textContent=u+' · '+s+' · leagues updated '+new Date(t).toLocaleString([],{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'});
   b.textContent='Refresh leagues';b.onclick=()=>load(u,s);
   $('stamp').append(sp,b);
   render();
@@ -176,7 +195,8 @@ async function restore(){
   const c=read('sl_data');
   if(!c||!c.data)return;
   $('user').value=c.u;$('season').value=c.s;
-  if(!ranks.length){$('msg').className='note';$('msg').textContent='Saved leagues found for '+c.u+'. Choose a rankings CSV above to view them.';return}
+  if(!ranks.length){$('msg').className='note';$('msg').textContent='Saved leagues found for '+c.u+'. Upload your rankings CSV above to view them.';return}
+  if(c.v!==2){load(c.u,c.s);return}
   try{players=await loadPlayers();show(c.data,c.t,c.u,c.s)}
   catch(err){$('msg').className='note err';$('msg').textContent='Could not load saved leagues: '+err.message}
 }
@@ -184,14 +204,22 @@ async function restore(){
 $('f').onsubmit=e=>{e.preventDefault();load($('user').value.trim(),$('season').value.trim())};
 
 function render(){
+  $('tabs').innerHTML='';
+  [['waivers','Waiver wire'],['power','League rankings']].forEach(([k,t])=>{const b=document.createElement('button');b.textContent=t;b.className=k==tab?'on':'';
+    b.onclick=()=>{tab=k;render()};$('tabs').appendChild(b)});
   $('leagues').innerHTML='';
   leagues.forEach((l,i)=>{const b=document.createElement('button');b.textContent=l.name;b.className=i==cur?'on':'';
-    b.onclick=()=>{cur=i;limit=50;render()};$('leagues').appendChild(b)});
+    b.onclick=()=>{cur=i;limit=50;openTeam=null;render()};$('leagues').appendChild(b)});
   $('pos').innerHTML='';
+  if(tab=='waivers')renderWaivers();else renderPower();
+  const miss=ranks.filter(r=>!r._id).map(r=>r.Player);
+  $('miss').textContent=miss.length?miss.length+' ranked players not matched to Sleeper: '+miss.slice(0,8).join(', ')+(miss.length>8?'…':''):'';
+}
+
+function renderWaivers(){
   ['ALL',...new Set(ranks.map(r=>r.Position).filter(Boolean))].forEach(p=>{const b=document.createElement('button');b.textContent=p;b.className=p==pos?'on':'';
     b.onclick=()=>{pos=p;limit=50;render()};$('pos').appendChild(b)});
   const L=leagues[cur],ok=r=>pos=='ALL'||r.Position==pos;
-  const esc=s=>String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
   const tbl=rs=>'<div class="wrap"><table><thead><tr>'+cols.map(c=>'<th>'+esc(c)+'</th>').join('')+'</tr></thead><tbody>'+
     rs.map(r=>'<tr>'+cols.map(c=>'<td'+(c=='Player'?' class="p"':'')+'>'+esc(r[c]||'')+'</td>').join('')+'</tr>').join('')+'</tbody></table></div>';
   const mine=L.mine.map(id=>{const r=rankById[id],p=players[id];
@@ -203,11 +231,65 @@ function render(){
     (all.length>limit?'<button class="more" id="more">Show 50 more ('+(all.length-limit)+' left)</button>':'')+
     (all.length?'':'<p class="note">No available ranked players for this filter.</p>')+'</section></div>';
   if($('more'))$('more').onclick=()=>{limit+=50;render()};
-  const miss=ranks.filter(r=>!r._id).map(r=>r.Player);
-  $('miss').textContent=miss.length?miss.length+' ranked players not matched to Sleeper: '+miss.slice(0,8).join(', ')+(miss.length>8?'\u2026':''):'';
+}
+
+const FLEX={FLEX:['RB','WR','TE'],WRRB_FLEX:['RB','WR'],REC_FLEX:['WR','TE'],SUPER_FLEX:['QB','RB','WR','TE']};
+
+function strength(L){
+  const ps=new Set(ranks.map(r=>r.Position)),N=ranks.length;
+  const val=id=>{const r=rankById[id];return r?100*Math.pow((N-r._n+1)/N,2):0};
+  let fixed={},flex=[];
+  for(const s of L.slots){if(FLEX[s])flex.push(s);else if(ps.has(s))fixed[s]=(fixed[s]||0)+1}
+  if(!Object.keys(fixed).length&&!flex.length){for(const [k,n] of [['QB',1],['RB',2],['WR',2],['TE',1]])if(ps.has(k))fixed[k]=n;flex=['FLEX']}
+  flex.sort((a,b)=>FLEX[a].length-FLEX[b].length);
+  const G=Object.keys(fixed);if(flex.length)G.push('Flex');
+  const teams=L.teams.map(t=>{
+    const pl=t.players.filter(id=>rankById[id]).sort((a,b)=>rankById[a]._n-rankById[b]._n),used=new Set(),g={};
+    for(const p of Object.keys(fixed)){g[p]=[];for(const id of pl){if(g[p].length>=fixed[p])break;if(!used.has(id)&&rankById[id].Position==p){used.add(id);g[p].push(id)}}}
+    if(flex.length){g.Flex=[];for(const s of flex){const id=pl.find(i=>!used.has(i)&&FLEX[s].includes(rankById[i].Position));if(id){used.add(id);g.Flex.push(id)}}}
+    const bench=pl.filter(i=>!used.has(i)).slice(0,5),sc={};let tot=0;
+    for(const k of G){sc[k]=g[k].reduce((a,id)=>a+val(id),0);tot+=sc[k]}
+    sc.Total=tot;sc.Depth=bench.reduce((a,id)=>a+val(id),0);
+    return{...t,g,bench,sc,rk:{}};
+  });
+  for(const k of [...G,'Total','Depth']){
+    const so=[...teams].sort((a,b)=>b.sc[k]-a.sc[k]);
+    so.forEach((t,i)=>{t.rk[k]=i&&t.sc[k]==so[i-1].sc[k]?so[i-1].rk[k]:i+1});
+  }
+  return{G,teams};
+}
+
+function renderPower(){
+  const L=leagues[cur],{G,teams:T}=strength(L);
+  if(!T.length){$('out').innerHTML='<p class="note">No teams found for this league.</p>';return}
+  const keys=[...G,'Depth'],n=T.length,sk=keys.includes(sortKey)?sortKey:'Total',me=T.find(t=>t.me);
+  const nm=t=>esc(t.name)+(t.owner&&t.owner!=t.name?' <span class="sc">'+esc(t.owner)+'</span>':'');
+  const pn=id=>{const r=rankById[id];return esc(players[id]?players[id][0]:id)+'<span class="sc">#'+esc(r.Overall||r._n)+'</span>'};
+  const lead=k=>[...T].sort((a,b)=>b.sc[k]-a.sc[k])[0];
+  const rows=[...T].sort((a,b)=>b.sc[sk]-a.sc[sk]||b.sc.Total-a.sc.Total);
+  const th=(k,t)=>'<th class="c"><button class="srt'+(k==sk?' on':'')+'" data-k="'+k+'">'+t+(k==sk?' ▼':'')+'</button></th>';
+  const cell=(t,k)=>'<td class="c'+(t.rk[k]==1?' r1':'')+'"><b>#'+t.rk[k]+'</b><span class="sc">'+Math.round(t.sc[k])+'</span></td>';
+  const best=[['Best team overall',lead('Total')],...G.map(k=>['Strongest '+k,lead(k)])]
+    .map(([l,t])=>'<div><span>'+esc(l)+'</span><b>'+esc(t.name)+'</b>'+(t.me?' (you)':'')+'</div>').join('');
+  let you='';
+  if(me){const gs=[...G].sort((a,b)=>me.rk[a]-me.rk[b]);
+    you='<p class="note">You are #'+me.rk.Total+' of '+n+' overall. Strongest group: <b>'+gs[0]+'</b> (#'+me.rk[gs[0]]+'). Weakest: <b>'+gs[gs.length-1]+'</b> (#'+me.rk[gs[gs.length-1]]+').</p>'}
+  const body=rows.map(t=>{
+    let h='<tr'+(t.me?' class="me"':'')+'><td class="c">'+t.rk.Total+'</td><td><button class="tm" data-id="'+t.id+'">'+nm(t)+(t.me?' (you)':'')+'</button></td>'+
+      cell(t,'Total')+keys.map(k=>cell(t,k)).join('')+'</tr>';
+    if(openTeam==t.id)h+='<tr class="det"><td colspan="'+(keys.length+3)+'">'+
+      G.map(k=>'<div><b>'+k+':</b> '+(t.g[k].length?t.g[k].map(pn).join(', '):'none')+'</div>').join('')+
+      '<div><b>Bench:</b> '+(t.bench.length?t.bench.map(pn).join(', '):'none')+'</div></td></tr>';
+    return h}).join('');
+  $('out').innerHTML='<div class="best">'+best+'</div>'+you+
+    '<div class="wrap"><table class="pw"><thead><tr><th class="c">Rank</th><th>Team</th>'+th('Total','Total')+keys.map(k=>th(k,k)).join('')+'</tr></thead><tbody>'+body+'</tbody></table></div>'+
+    '<p class="note">Each player is worth points by overall rank in your CSV (rank 1 is about 100, falling as the rank gets lower; unranked is 0). Teams are scored on their best possible lineup for this league\'s starting slots, and Depth is the top 5 bench players. Each cell shows the team\'s rank in the league for that group, with its score beside it. Click a column to sort, or a team to see its lineup.</p>';
+  $('out').querySelectorAll('.srt').forEach(b=>b.onclick=()=>{sortKey=b.dataset.k;renderPower()});
+  $('out').querySelectorAll('.tm').forEach(b=>b.onclick=()=>{openTeam=openTeam==b.dataset.id?null:b.dataset.id;renderPower()});
 }
 
 if(!storageOK())noSave();
-loadRanks().then(restore);
+loadRanks();
+restore();
 </script>
 </body></html>
